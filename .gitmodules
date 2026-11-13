@@ -1,0 +1,3 @@
+[submodule "vendor/noetix_sdk_bumi"]
+	path = vendor/noetix_sdk_bumi
+	url = https://github.com/Noetix-Robotics/noetix_sdk_bumi.git

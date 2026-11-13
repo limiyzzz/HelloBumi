@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<meta name="theme-color" content="#0f1115" />
+<title>Bumi 遥控</title>
+<link rel="stylesheet" href="/static/app.css" />
+<script defer src="/static/vendor/nipplejs.js"></script>
+<script defer src="/static/vendor/nosleep.js"></script>
+<script type="module" src="/static/app.js"></script>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>Bumi 遥控<span>网页版</span></h1>
+    <div class="pills">
+      <span id="link" class="pill off">未连接</span>
+      <span id="mode" class="pill">workmode -</span>
+      <span id="walk" class="pill">站立</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- 左列：移动控制 -->
+    <div class="col-left">
+      <section class="card">
+        <div class="card-head">
+          <h2 class="card-title">移动</h2>
+          <div class="segmented" role="group" aria-label="输入方式">
+            <button class="btn tiny on" data-input="dpad">方向键</button>
+            <button class="btn tiny" data-input="stick">摇杆</button>
+          </div>
+        </div>
+        <div class="dpad" id="dpad">
+          <button class="key" data-dir="w" style="grid-area: up">▲</button>
+          <button class="key" data-dir="a" style="grid-area: left">◀</button>
+          <button class="key mid" id="stopBtn" data-cmd="stop" style="grid-area: mid">停</button>
+          <button class="key" data-dir="d" style="grid-area: right">▶</button>
+          <button class="key" data-dir="s" style="grid-area: down">▼</button>
+        </div>
+        <div class="stick-zone" id="stickZone" hidden>
+          <span class="stick-hint">拖动摇杆控制前后与转向</span>
+        </div>
+      </section>
+
+      <section class="card panel">
+        <h2 class="card-title">速度与模式</h2>
+        <div class="row">
+          <label for="speed">速度</label>
+          <input id="speed" type="range" min="0.1" max="1" step="0.05" value="0.3" />
+          <output id="speedVal">0.30</output>
+        </div>
+
+        <div class="grid2">
+          <button class="btn primary" id="walkBtn" data-cmd="walk">行走 (o)</button>
+          <button class="btn" data-cmd="stand">起身 (r)</button>
+          <button class="btn" data-cmd="enable">恢复使能 (i)</button>
+          <button class="btn" data-cmd="collect">收纳 (c)</button>
+          <button class="btn wide" id="wakeBtn" data-cmd="wake">屏幕常亮：关</button>
+          <button class="btn danger wide" data-cmd="estop">急停（空格）</button>
+          <button class="btn wide" data-cmd="quit">退出 (q)</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 class="card-title">动作</h2>
+        <div class="grid2">
+          <button class="btn" data-act="SWING">挥手</button>
+          <button class="btn" data-act="SHAKE">握手</button>
+          <button class="btn" data-act="CHEER">欢呼</button>
+          <button class="btn" data-act="DANCE1">舞蹈 1</button>
+          <button class="btn wide" data-act="DANCE2">舞蹈 2</button>
+        </div>
+      </section>
+    </div>
+
+    <!-- 右列：视觉 -->
+    <section class="card cam-card">
+      <div class="cam-head">
+        <span class="title">视觉 · D435i</span>
+        <span id="camNote" class="cam-note"></span>
+        <span id="camInfo" class="pill">检测中</span>
+      </div>
+      <div class="cam-body">
+        <img id="cam" alt="相机画面" />
+        <div id="camHint" class="cam-hint">正在检测相机 ...</div>
+      </div>
+      <div class="dist">
+        <div class="dist-item" id="distLeft"><span>左</span><strong>--</strong></div>
+        <div class="dist-item" id="distCenter"><span>中</span><strong>--</strong></div>
+        <div class="dist-item" id="distRight"><span>右</span><strong>--</strong></div>
+      </div>
+      <div id="distNote" class="dist-note">等待深度数据 ...</div>
+    </section>
+  </main>
+
+  <footer>
+    按住 <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 或方向键移动，松开即停；
+    <kbd>空格</kbd> 停车，<kbd>O</kbd> 行走，<kbd>R</kbd> 起身，<kbd>I</kbd> 使能，<kbd>C</kbd> 收纳，<kbd>Q</kbd> 退出。<br />
+    速度先小后大（吊起实验建议 0.1~0.3）；网页断开 0.5 秒后机器人会自动停车。
+  </footer>
+</div>
+
+<div id="toast"></div>
+</body>
+</html>

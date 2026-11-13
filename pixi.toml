@@ -1,0 +1,30 @@
+[workspace]
+name = "bumi-main"
+version = "0.1.0"
+description = "Bumi 机器人板载程序：网页遥控行走 + WiFi 配网"
+channels = ["conda-forge"]
+platforms = ["linux-aarch64"]
+
+# 厂商 SDK 只提供编译好的 *.cpython-310-aarch64-linux-gnu.so，必须锁 CPython 3.10。
+[dependencies]
+python = "3.10.*"
+just = ">=1.36,<2"
+
+# 运行时真正用到的第三方 Python 包（src/walk/camera.py 的 cv2 / numpy）。
+# wifi_setup.py、walk_web.py 只用标准库。
+[pypi-dependencies]
+numpy = "==2.2.6"
+opencv-python = "==5.0.0.93"
+
+# walk/server.py：Web 框架（WSGI + threaded）与枚举本机网卡地址
+flask = ">=3.0,<4"
+psutil = ">=6,<8"
+
+# wifi_setup.py 的 CLI / 交互 / 重试 / 渲染
+typer = ">=0.12,<1"
+questionary = ">=2,<3"
+rich = ">=13,<15"
+tenacity = ">=8,<10"
+
+# 仅用于 `just check` 时的 app.js 语法校验；网页运行时零依赖
+esprima = "==4.0.1"

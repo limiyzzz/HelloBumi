@@ -1,0 +1,31 @@
+.pixi/
+__pycache__/
+*.py[cod]
+
+# Generated output
+build/
+out/
+logs/
+recordings/
+
+# Large vendor archives are kept locally, not committed.
+downloads/*.zip
+downloads/*.tar
+downloads/*.tar.gz
+
+# SDK build output (submodule-local ignores are not always sufficient).
+vendor/noetix_sdk_bumi/build/
+vendor/noetix_sdk_bumi/out/
+
+# SDK is used locally via symlinks (absolute paths, machine-specific)
+noetix_sdk_bumi/
+
+# Python
+.venv/
+*.egg-info/
+
+# Logs & editor/system files
+*.log
+.vscode/
+.idea/
+.DS_Store
