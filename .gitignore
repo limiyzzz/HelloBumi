@@ -17,8 +17,9 @@ downloads/*.tar.gz
 vendor/noetix_sdk_bumi/build/
 vendor/noetix_sdk_bumi/out/
 
-# SDK is used locally via symlinks (absolute paths, machine-specific)
-noetix_sdk_bumi/
+# 旧的本地软连接目录（绝对路径、每台机器不同），SDK 现在走 vendor/noetix_sdk_bumi/
+# 注意必须锚定根目录，否则会连 vendor/noetix_sdk_bumi/ 一起忽略
+/noetix_sdk_bumi/
 
 # Python
 .venv/

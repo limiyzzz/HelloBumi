@@ -84,9 +84,7 @@ def main() -> int:
     try:
         app = WalkApp()
         if not args.no_camera:
-            app.use_camera(direct=not args.dds_cam, with_depth=args.depth)
-        if args.depth:
-            app.use_depth()
+            app.use_vision(with_depth=args.depth)
         app.start_server(args.bind, args.port, args.iface)
         app.run()
     except KeyboardInterrupt:
@@ -119,16 +117,9 @@ def build_parser() -> argparse.ArgumentParser:#为网页提供特殊启动方式
     parser = argparse.ArgumentParser(description="Bumi 网页遥控（在机器人上运行）")
     parser.add_argument("--bind", default="0.0.0.0", help="监听地址，默认全部网卡")
     parser.add_argument("--port", type=int, default=8080, help="网页端口")
-    parser.add_argument("--no-camera", action="store_true", help="不启动相机预览")
-    parser.add_argument("--direct-cam", action="store_true",
-                        help="兼容旧命令：默认已直连 D435I，无需再加")
-    parser.add_argument("--dds-cam", action="store_true",
-                        help="改回订阅厂商 noetix-video-capture 的 DDS 视频流（不碰设备）")
+    parser.add_argument("--no-camera", action="store_true", help="不启动 D435I 视觉（含深度）")
     parser.add_argument("--depth", action="store_true",
-                        help="开启 D435I 深度测距（仅网页显示；厂商视频服务运行时深度会被饿死，"
-                             "先用 sudo systemctl stop noetix-video-capture 停掉它）")
-    parser.add_argument("--no-depth", action="store_true",
-                        help="兼容旧命令：默认已关闭直连深度，无需再加此参数")
+                        help="同时开 D435I 深度流：分区测距 + 伪彩深度图（仅网页显示，不参与控制）")
     # TODO: 咱们不需要iface
     parser.add_argument("--iface", default=None, help="启动提示里只显示这张网卡的地址，例如 wlx90de802fc5eb")
     return parser

@@ -17,28 +17,22 @@ doctor:
     pixi run python -c "import sys, os; sys.path.insert(0, 'src'); import walk, highcontrol_py, mediacontrol_py; print('厂商 SDK 导入 OK', walk.SDK_DIR); print('CYCLONEDDS_URI', os.environ['CYCLONEDDS_URI'])"
     @pixi run python -c "import importlib.util as u; print('pyrealsense2', 'OK' if u.find_spec('pyrealsense2') else '未安装（仅 --depth 实验性测距需要）')"
 
+# 重新编译 vendor SDK 的 3 个 pybind .so：用项目内 scripts/sdk/ 的精简版
+# 构建文件覆盖上游 submodule 的版本，构建后还原，产物留在 SDK 根目录（已 ignore）。
+sdk-build:
+    #!/usr/bin/env bash
+    set -e
+    cp scripts/sdk/CMakeLists.txt scripts/sdk/build.sh vendor/noetix_sdk_bumi/
+    trap 'git -C "$PWD/vendor/noetix_sdk_bumi" checkout -- CMakeLists.txt build.sh' EXIT
+    (cd vendor/noetix_sdk_bumi && ./build.sh)
+
 check:
     pixi run python -m compileall -q src/walk src/walk_web.py src/wifi_setup.py
     pixi run python -c "import esprima; esprima.parseScript(open('src/web/app.js', encoding='utf-8').read()); print('app.js 语法 OK')"
     pixi run python -c "import json,hashlib,pathlib; p=pathlib.Path('src/web/vendor'); m=json.load(open(p/'vendor.json')); assert all(hashlib.sha256((p/x['file']).read_bytes()).hexdigest()==x['sha256'] for x in m['libraries']); print('vendor 校验 OK')"
     @echo "Python + JS 语法 + vendor 完整性检查通过"
 
-# ---------------- 相机 ----------------
-
-# 停厂商视频服务，把 D435I 让给 walk_web.py（直连彩色+深度前必须先执行）
-cam-off:
-    sudo systemctl stop noetix-video-capture
-    @systemctl is-active noetix-video-capture || true
-
-# 恢复厂商视频服务（不用本项目直连时再开回来）
-cam-on:
-    sudo systemctl start noetix-video-capture
-    @systemctl is-active noetix-video-capture || true
-
-cam-status:
-    @systemctl status noetix-video-capture --no-pager -n 5 || true
-
-# ---------------- 网页遥控（默认直连 D435I，需先 just cam-off） ----------------
+# ---------------- 网页遥控（D435I 直连，彩色 + 可选深度） ----------------
 
 serve port=PORT:
     pixi run python -u src/walk_web.py --port {{port}}
@@ -46,17 +40,9 @@ serve port=PORT:
 serve-nocam port=PORT:
     pixi run python -u src/walk_web.py --port {{port}} --no-camera
 
-# 彩色 + 深度同一条 pipeline（同一 frameset，画面天然同帧）；需先 just cam-off
+# 彩色 + 深度同一条 pipeline：分区测距 + 伪彩深度图
 serve-depth port=PORT:
     pixi run python -u src/walk_web.py --port {{port}} --depth
-
-# 兼容旧命令：--direct-cam 现在已是默认，等价于 just serve
-serve-direct port=PORT:
-    pixi run python -u src/walk_web.py --port {{port}} --direct-cam
-
-# 改回厂商 DDS 视频流（不碰设备，画面只有彩色、没有深度图）
-serve-dds port=PORT:
-    pixi run python -u src/walk_web.py --port {{port}} --dds-cam
 
 serve-bg port=PORT:
     #!/usr/bin/env bash

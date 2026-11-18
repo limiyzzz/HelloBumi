@@ -3,13 +3,13 @@
 walk_web.py 只负责解析命令行参数，剩下的装配都在这里：
 
     app = WalkApp()                     # 加载 SDK、连上运控板
-    app.use_camera()                    # 可选：订阅画面
+    app.use_vision(with_depth=False)    # 可选：D435I 彩色（+深度）
     app.start_server("0.0.0.0", 8080)   # 起 HTTP 服务
     app.run()                           # 阻塞：跑控制循环
     app.close()                         # 收尾：补发零速度、停服务、关相机
 
 异常约定（交给调用方打印）：
-    ImportError / RuntimeError  SDK 软连接断了、SDK 初始化失败
+    ImportError / RuntimeError  vendor SDK 缺失或未编译、SDK 初始化失败
     OSError                    端口被占用
 """
 from __future__ import annotations
@@ -22,9 +22,8 @@ from typing import Any
 
 import highcontrol_py
 
-from .camera import Camera
-from .depth import DepthVision
 from .server import HttpServer, serve as serve_http
+from .vision import Vision
 from .remote import Remote
 
 LOOP_DT = 0.01          # 控制周期；publish_cmd 调用间隔须 > 2ms，10ms 留足余量
@@ -46,55 +45,24 @@ class WalkApp:
         self.controller.subscribe_robot_hardware_status(
             lambda status: self.remote.set_workmode(read_workmode(status)))
         print("HighController 已就绪，等待机器人状态 ...", flush=True)
-        self.camera: Camera | None = None
-        self.vision: DepthVision | None = None
+        self.vision: Vision | None = None
         self.httpd: HttpServer | None = None
         self._server_boot: Future[HttpServer] | None = None
 
     # ---------------- 可选部件 ----------------
 
-    def use_camera(self, direct: bool = False, with_depth: bool = False) -> None:
-        """起相机预览；DDS 拿不到画面会自动回落直连，再失败也只是网页显示原因。
+    def use_vision(self, with_depth: bool = False) -> None:
+        """开 D435I 彩色预览（可选深度）；拿不到也只是网页显示原因，遥控照常。
 
-        `with_depth=True` 时直连 pipeline 会同时开深度流（供 --depth 分析深度）。
+        彩色与深度来自同一条 pipeline：采集线程只编码彩色 + 投递深度数组，
+        测距/着色在独立分析线程做（5Hz，只处理最新帧），互不阻塞。
         """
-        camera = Camera(direct=direct, with_depth=with_depth)
-        if camera.start():
-            desc = "D435I 直连" if camera.source == "direct" else "DDS 视频流"
-            print(f"相机已启动：{camera.width}x{camera.height}（{desc}）", flush=True)
-        else:
-            print(f"相机不可用：{camera.error}（网页仍可遥控，只是没有画面）", flush=True)
-        self.camera = camera
-
-    def use_depth(self) -> None:
-        """开 D435I 深度流测距；拿不到也继续，只是网页显示不可用原因。
-
-        视觉分析是纯旁路：结果只进 /api/status，绝不参与控制循环或看门狗。
-        相机直连且开了深度流时，彩色和深度来自同一条 pipeline：相机线程只把
-        最新深度帧投给 `ingest()`（微秒级），测距/着色在 depth 自己的线程里做，
-        不会拖慢彩色取帧；两条 MJPEG 也各走各的节奏（彩色 25fps、深度 5fps）。
-        厂商服务运行时深度会被饿成 ~0.5fps，要深度先 `just cam-off`
-        （= `sudo systemctl stop noetix-video-capture`）。
-        """
-        synced = (self.camera is not None and self.camera.source == "direct"
-                  and self.camera.with_depth)
-        if synced:
-            vision = DepthVision(external=True)
-            if vision.start():
-                self.camera.set_depth_sink(vision.ingest)
-                print("深度视觉已启动：彩色+深度同源采集（分析在独立线程，不拖慢画面）",
-                      flush=True)
-            else:
-                print(f"深度视觉不可用：{vision.error}（遥控照常可用）", flush=True)
-            self.vision = vision
-            return
-        print("[info] --depth 直连 D435I 深度流；若画面 fps 只有 ~0.5，"
-              "先停厂商视频服务（sudo systemctl stop noetix-video-capture）", flush=True)
-        vision = DepthVision()
+        vision = Vision(with_depth=with_depth)
         if vision.start():
-            print("深度视觉已启动：左/中/右分区测距（仅网页显示）", flush=True)
+            what = "彩色 + 深度" if with_depth else "彩色"
+            print(f"D435I 直连已启动：{vision.width}x{vision.height}（{what}）", flush=True)
         else:
-            print(f"深度视觉不可用：{vision.error}（遥控照常可用）", flush=True)
+            print(f"视觉不可用：{vision.error}（网页仍可遥控）", flush=True)
         self.vision = vision
 
     def start_server(self, host: str, port: int, iface: str | None = None) -> None:
@@ -111,8 +79,7 @@ class WalkApp:
 
         def work() -> None:
             try:
-                httpd = serve_http(self.remote, self.camera, host, port, iface,
-                                   vision=self.vision)
+                httpd = serve_http(self.remote, host, port, iface, self.vision)
             except Exception as exc:
                 boot.set_exception(exc)
                 return
@@ -168,8 +135,6 @@ class WalkApp:
                 print("[warn] HTTP 启动线程仍未结束，进程退出时会强制关掉它", flush=True)
         if self.httpd is not None:
             self.httpd.shutdown()
-        if self.camera is not None:
-            self.camera.close()
         if self.vision is not None:
             self.vision.close()
         print("已停车，退出。", flush=True)

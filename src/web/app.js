@@ -28,7 +28,7 @@ const el = [
   "link", "mode", "walk", "speed", "speedVal", "walkBtn", "toast",
   "cam", "camHint", "camInfo", "camNote",
   "depthImg", "depthHint",
-  "dpad", "stickZone", "wakeBtn",
+  "dpad", "stickZone",
   "distLeft", "distCenter", "distRight", "distNote",
 ].reduce((map, id) => {
   map[id] = document.getElementById(id);
@@ -48,7 +48,6 @@ const state = {
   pressed: new Set(),
   joystick: { x: 0, yaw: 0 },   // nipplejs 的模拟量
   inputMode: loadInputMode(),
-  awake: false,
   speed: 0.3,
   walking: false,
   workmode: null,
@@ -62,7 +61,6 @@ const state = {
 };
 
 let stickManager = null;
-let noSleep = null;
 
 // ------------------------------------------------------------------ 通信
 async function request(path, options) {
@@ -279,26 +277,6 @@ function setInputMode(mode, notify) {
   if (notify) push();
 }
 
-// ------------------------------------------------------------------ 屏幕常亮（NoSleep.js）
-function toggleWakeLock() {
-  if (typeof NoSleep === "undefined") { toast("屏幕常亮组件未加载"); return; }
-  if (!noSleep) noSleep = new NoSleep();
-  const next = !state.awake;
-  // enable() 必须在用户手势里调用（这里就是点击）；新版返回 Promise，旧版不返回
-  const pending = next ? noSleep.enable() : noSleep.disable();
-  const apply = () => {
-    state.awake = next;
-    el.wakeBtn.textContent = "屏幕常亮：" + (next ? "开" : "关");
-    el.wakeBtn.classList.toggle("on", next);
-    toast(next ? "已保持屏幕常亮，遥控结束后记得关掉" : "屏幕常亮已关闭");
-  };
-  if (pending && typeof pending.then === "function") {
-    pending.then(apply).catch(() => toast("屏幕常亮失败：浏览器不支持或被拒绝"));
-  } else {
-    apply();
-  }
-}
-
 // 命令表：HTML 的 data-cmd 与键盘按键都映射到这里
 const COMMANDS = Object.freeze({
   walk: () => act("WALK"),
@@ -321,7 +299,6 @@ const COMMANDS = Object.freeze({
     clearMotion();
     post({ type: "quit" });
   },
-  wake: toggleWakeLock,
   stop: stopAll,
 });
 

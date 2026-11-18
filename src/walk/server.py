@@ -27,9 +27,8 @@ import psutil
 from flask import Flask, Response, jsonify, request, send_from_directory
 from werkzeug.serving import ThreadedWSGIServer, WSGIRequestHandler, make_server
 
-from .camera import Camera
-from .depth import DepthVision
 from .remote import Remote
+from .vision import Vision
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 INDEX = WEB_DIR / "index.html"
@@ -78,17 +77,17 @@ class HttpServer:
         self._thread.join(timeout=2)
 
 
-def serve(remote: Remote, camera: Camera | None, host: str, port: int,
-          iface: str | None = None, vision: DepthVision | None = None) -> HttpServer:
+def serve(remote: Remote, host: str, port: int,
+          iface: str | None = None, vision: Vision | None = None) -> HttpServer:
     """起 HTTP 服务并打印可访问地址；缺网页、网卡名无效或端口占用时抛异常。
 
     地址打印放在这里（而不是 app.py）：服务自己知道端口和网卡，调用方不用碰
-    local_urls / --iface，只传进来就行。`vision` 是可选的旁路数据源。
+    local_urls / --iface，只传进来就行。`vision` 是可选的 D435I 视觉模块。
     """
     if not INDEX.is_file():
         raise FileNotFoundError(f"找不到网页文件：{INDEX}（web/ 要和 walk_web.py 放在一起）")
     urls = local_urls(port, iface)      # 先算地址：网卡名写错时还没占端口
-    server = make_server(host, port, create_app(remote, camera, vision),
+    server = make_server(host, port, create_app(remote, vision),
                          threaded=True, request_handler=QuietHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -98,8 +97,7 @@ def serve(remote: Remote, camera: Camera | None, host: str, port: int,
 
 
 # ------------------------------------------------------------------ 应用工厂
-def create_app(remote: Remote, camera: Camera | None,
-               vision: DepthVision | None = None) -> Flask:
+def create_app(remote: Remote, vision: Vision | None = None) -> Flask:
     """依赖通过闭包注入，避免全局变量 / 类属性打补丁；也方便单独起服务做测试。"""
     app = Flask(__name__, static_folder=None)   # 关掉 Flask 自带的 /static，用下面白名单版本
     app.json.ensure_ascii = False
@@ -134,7 +132,7 @@ def create_app(remote: Remote, camera: Camera | None,
     def status() -> Response:
         return jsonify({"ok": True, "instance": INSTANCE_ID,
                         **remote.status(),
-                        "camera": _camera_info(camera),
+                        "camera": _camera_info(vision),
                         "vision": _vision_info(vision)})
 
     @app.post("/api/cmd")
@@ -154,9 +152,9 @@ def create_app(remote: Remote, camera: Camera | None,
 
     @app.get("/api/camera.mjpg")
     def camera_stream() -> Response:
-        cam = camera
+        cam = vision
         if cam is None or not cam.ready:
-            reason = cam.error if cam is not None else "相机未启用"
+            reason = cam.error if cam is not None else "相机未启用（--no-camera）"
             return jsonify(ok=False, msg=reason or "相机不可用"), 503
 
         def part(frame: bytes) -> bytes:
@@ -226,19 +224,19 @@ def _static_target(name: str) -> tuple[str, str, str] | None:
     return str(base), filename, ctype
 
 
-def _camera_info(camera: Camera | None) -> dict[str, Any]:
-    if camera is not None:
-        return camera.info()
+def _camera_info(cam: Vision | None) -> dict[str, Any]:
+    if cam is not None:
+        return cam.info()
     return {"ready": False, "error": "相机未启用（--no-camera）", "fps": 0.0,
             "source": "off", "note": "", "stale": False}
 
 
-def _vision_info(vision: DepthVision | None) -> dict[str, Any]:
+def _vision_info(vision: Vision | None) -> dict[str, Any]:
     """分区距离；超过 VISION_STALE 秒没更新就判过期，网页只显示原因不显示旧值。"""
     if vision is None:
         return {"ok": False, "left": None, "center": None, "right": None,
                 "nearest": None, "updated_at": None,
-                "msg": "前方测距未启用（加 --depth 开启；需先 just cam-off 停厂商服务）"}
+                "msg": "前方测距未启用（加 --depth 开启）"}
     data = vision.snapshot()
     ts = data.get("updated_at")
     if ts is not None and time.time() - ts > VISION_STALE:

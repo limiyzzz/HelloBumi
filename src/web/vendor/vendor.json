@@ -9,15 +9,6 @@
       "license_file": "LICENSE-nipplejs.txt",
       "source": "https://cdn.jsdelivr.net/npm/nipplejs@0.10.2/dist/nipplejs.js",
       "sha256": "b6a612a11381a67a0f0c16166448183e1c160609d370713a1aa5625d1c087253"
-    },
-    {
-      "name": "nosleep.js",
-      "version": "0.12.0",
-      "file": "nosleep.js",
-      "license": "MIT",
-      "license_file": "LICENSE-nosleep.txt",
-      "source": "https://cdn.jsdelivr.net/npm/nosleep.js@0.12.0/dist/NoSleep.min.js",
-      "sha256": "887b763e53ecaeba7bdddcacb29f7ffaf9da8a3576c2cca7ea4a1ecd14ff731c"
     }
   ]
 }
