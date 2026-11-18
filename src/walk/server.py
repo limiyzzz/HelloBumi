@@ -1,9 +1,10 @@
-"""给网页用的 HTTP 服务（Flask + Werkzeug）：页面 + 静态资源 + 三个接口。
+"""给网页用的 HTTP 服务（Flask + Werkzeug）：页面 + 静态资源 + 四个接口。
 
     GET  /                 遥控页面（src/web/index.html）
     GET  /static/<name>    页面依赖（app.css / app.js / vendor/*.js，白名单后缀，防目录穿越）
     GET  /api/status       当前状态（workmode / walking / 速度 / 相机 / 前方距离）
     GET  /api/camera.mjpg  相机画面（MJPEG 长连接，生成器逐帧推）
+    GET  /api/depth.mjpg   伪彩色深度图（MJPEG 长连接，仅 --depth 时可用）
     POST /api/cmd          命令：move / stop / action / estop / quit
 
 选 Flask / WSGI 而不是 FastAPI / ASGI：控制循环是同步线程，Werkzeug 的 threaded
@@ -18,6 +19,7 @@ from __future__ import annotations
 import socket
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -36,8 +38,12 @@ STATIC_TYPES = {        # 只放行页面真正用到的静态资源后缀
     ".js": "text/javascript",
 }
 VENDOR_DIR = "vendor"   # /static/vendor/<file> 只允许这一级子目录
-STREAM_FPS = 20         # 画面推送频率，超出相机实际帧率只会重复上一帧
+STREAM_FPS = 25         # 画面推送上限；相机直连约 30fps，推 25 更稳、手机解码也不吃力
+DEPTH_STREAM_FPS = 5    # 深度图推送频率，与 depth.py 的 HZ 一致
 VISION_STALE = 2.0      # 深度结果超过这个秒数就判为过期，网页不再显示旧距离
+# 每次启动一个 ID：网页发现它变了就自动 reload，丢掉旧的 MJPEG 连接 / JS 状态。
+# 服务端重启后旧页面若继续跑，断流 error + 重连会在浏览器里不断累积，越看越卡。
+INSTANCE_ID = uuid.uuid4().hex
 
 # 网页命令 → Remote 方法（模块级常量，不挂在类属性上）
 COMMANDS: dict[str, Callable[[Remote, dict[str, Any]], tuple[bool, str]]] = {
@@ -126,7 +132,8 @@ def create_app(remote: Remote, camera: Camera | None,
 
     @app.get("/api/status")
     def status() -> Response:
-        return jsonify({"ok": True, **remote.status(),
+        return jsonify({"ok": True, "instance": INSTANCE_ID,
+                        **remote.status(),
                         "camera": _camera_info(camera),
                         "vision": _vision_info(vision)})
 
@@ -152,16 +159,47 @@ def create_app(remote: Remote, camera: Camera | None,
             reason = cam.error if cam is not None else "相机未启用"
             return jsonify(ok=False, msg=reason or "相机不可用"), 503
 
+        def part(frame: bytes) -> bytes:
+            return (b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n"
+                    b"Content-Length: " + str(len(frame)).encode("ascii")
+                    + b"\r\n\r\n" + frame + b"\r\n")
+
         def frames() -> Iterator[bytes]:
             # 浏览器关页面 → werkzeug 写失败 → 生成器被关闭，线程自然结束
+            last: bytes | None = None
             while not cam.stop.is_set():
                 frame = cam.latest()
-                if frame:
-                    yield (b"--frame\r\n"
-                           b"Content-Type: image/jpeg\r\n"
-                           b"Content-Length: " + str(len(frame)).encode("ascii")
-                           + b"\r\n\r\n" + frame + b"\r\n")
+                # 换帧就推：不再等深度帧的序号，彩色走自己的节奏
+                if frame is not None and frame is not last:
+                    last = frame
+                    yield part(frame)
                 time.sleep(1 / STREAM_FPS)
+
+        return Response(frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+    @app.get("/api/depth.mjpg")
+    def depth_stream() -> Response:
+        if vision is None or vision.depth_jpeg() is None:
+            reason = ("深度图未启用（加 --depth 开启）" if vision is None
+                      else "深度图暂不可用")
+            return jsonify(ok=False, msg=reason), 503
+
+        def part(frame: bytes) -> bytes:
+            return (b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n"
+                    b"Content-Length: " + str(len(frame)).encode("ascii")
+                    + b"\r\n\r\n" + frame + b"\r\n")
+
+        def frames() -> Iterator[bytes]:
+            # 浏览器关页面 → werkzeug 写失败 → 生成器被关闭，线程自然结束
+            last: bytes | None = None
+            while not vision.stop.is_set():
+                frame = vision.depth_jpeg()
+                if frame is not None and frame is not last:   # 5Hz 才换图，不重复推
+                    last = frame
+                    yield part(frame)
+                time.sleep(1 / DEPTH_STREAM_FPS)
 
         return Response(frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
@@ -200,7 +238,7 @@ def _vision_info(vision: DepthVision | None) -> dict[str, Any]:
     if vision is None:
         return {"ok": False, "left": None, "center": None, "right": None,
                 "nearest": None, "updated_at": None,
-                "msg": "前方测距未启用（默认关闭以保护相机画面，加 --depth 开启）"}
+                "msg": "前方测距未启用（加 --depth 开启；需先 just cam-off 停厂商服务）"}
     data = vision.snapshot()
     ts = data.get("updated_at")
     if ts is not None and time.time() - ts > VISION_STALE:

@@ -1,1 +1,10 @@
-192.168.5.105
+192.168.5.144
+
+cd /home/noetix/projects/bumi-main
+just cam-off                              
+just serve-depth          
+
+
+
+cd /home/noetix/projects/bumi-main
+pixi run python -u src/walk_web.py --port 8080 --depth

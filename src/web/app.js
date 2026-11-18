@@ -18,11 +18,16 @@ const KEY_COMMANDS = Object.freeze({
 const HEARTBEAT_MS = 100;   // 每周期发当前速度，保活服务端看门狗
 const POLL_MS = 300;        // 状态轮询间隔
 const MAX_INFLIGHT = 3;     // 网络慢时不要堆积请求
+const STREAM_RETRY_MS = 2000;  // 两路 MJPEG 断流后重连间隔，避免重启时疯狂建连接
+// 用 1×1 透明 GIF 断开 MJPEG：removeAttribute("src") 会再触发 error，
+// 和 error 监听形成无限循环（每次 restart 断流都会点燃，越用越卡）
+const BLANK_IMG = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 
 // ------------------------------------------------------------------ DOM / 状态
 const el = [
   "link", "mode", "walk", "speed", "speedVal", "walkBtn", "toast",
   "cam", "camHint", "camInfo", "camNote",
+  "depthImg", "depthHint",
   "dpad", "stickZone", "wakeBtn",
   "distLeft", "distCenter", "distRight", "distNote",
 ].reduce((map, id) => {
@@ -50,6 +55,10 @@ const state = {
   inflight: 0,
   toastTimer: 0,
   camStreaming: false,
+  depthStreaming: false,
+  camRetryAt: 0,              // 相机下次允许重连的时刻（ms）
+  depthRetryAt: 0,            // 深度图下次允许重连的时刻（ms）
+  instanceId: null,           // 后端实例 ID；变了就整页重载，丢掉旧连接
 };
 
 let stickManager = null;
@@ -110,7 +119,8 @@ function setWalking(on) {
 
 function showCamProblem(hint, badge) {
   state.camStreaming = false;
-  el.cam.removeAttribute("src");
+  state.camRetryAt = Date.now() + STREAM_RETRY_MS;
+  el.cam.src = BLANK_IMG;         // 断开 MJPEG，但不再触发 error 递归
   el.cam.style.display = "none";
   el.camHint.style.display = "block";
   el.camHint.textContent = hint;
@@ -125,19 +135,29 @@ function setCamera(info) {
     return;
   }
   if (info.stale) {
-    showCamProblem("画面已停滞：DDS 视频流没有新帧，检查 noetix-video-capture 与 D435I 的 USB 连接", "停滞");
+    const how = info.source === "direct" ? "D435I 直连流" : "DDS 视频流";
+    showCamProblem("画面已停滞：" + how + "没有新帧，检查 USB 连接与设备是否被占用", "停滞");
     return;
   }
-  if (!state.camStreaming) {
+  if (!state.camStreaming && Date.now() >= state.camRetryAt) {
     el.cam.src = "/api/camera.mjpg?t=" + Date.now();
     state.camStreaming = true;
   }
   el.cam.style.display = "block";
   el.camHint.style.display = "none";
   const fps = info.fps ? Math.round(info.fps) + " fps" : "在线";
-  el.camInfo.textContent = "DDS · " + fps;
+  el.camInfo.textContent = (info.source === "direct" ? "直连" : "DDS") + " · " + fps;
   el.camInfo.className = "pill on";
   el.camNote.textContent = info.note || "";
+}
+
+function hideDepth(hint) {
+  state.depthStreaming = false;
+  state.depthRetryAt = Date.now() + STREAM_RETRY_MS;
+  el.depthImg.src = BLANK_IMG;    // 同相机：别用 removeAttribute 触发 error 递归
+  el.depthImg.style.display = "none";
+  el.depthHint.style.display = "block";
+  el.depthHint.textContent = hint;
 }
 
 function setVision(info) {
@@ -149,6 +169,7 @@ function setVision(info) {
     }
     el.distNote.textContent = (info && info.msg) || "深度视觉不可用";
     el.distNote.className = "dist-note warn";
+    hideDepth((info && info.msg) || "深度图不可用");
     return;
   }
   for (const zone of zones) {
@@ -160,6 +181,12 @@ function setVision(info) {
   }
   el.distNote.textContent = "量程 " + info.min_m + "–" + info.max_m + " m · 仅供参考，不参与控制";
   el.distNote.className = "dist-note";
+  if (!state.depthStreaming && Date.now() >= state.depthRetryAt) {
+    el.depthImg.src = "/api/depth.mjpg?t=" + Date.now();
+    state.depthStreaming = true;
+  }
+  el.depthImg.style.display = "block";
+  el.depthHint.style.display = "none";
 }
 
 // ------------------------------------------------------------------ 控制
@@ -384,12 +411,23 @@ function bindControls() {
     // 流被服务端断开时，等下一轮状态轮询再重试
     showCamProblem("画面中断，正在重试 ...", "重连中");
   });
+  el.depthImg.addEventListener("error", () => {
+    hideDepth("深度图中断，正在重试 ...");
+  });
 }
 
 // ------------------------------------------------------------------ 轮询与启动
 async function poll() {
   try {
     const data = await request("/api/status", { cache: "no-store" });
+    // 后端重启过：旧页面的 MJPEG 连接和 JS 状态都是脏的，整页重载一次就干净了
+    if (data.instance) {
+      if (state.instanceId && data.instance !== state.instanceId) {
+        location.reload();
+        return;
+      }
+      state.instanceId = data.instance;
+    }
     setLink(true);
     setMode(data.workmode);
     setWalking(!!data.walking);

@@ -147,6 +147,20 @@ input[type="range"]::-moz-range-thumb {
 #cam { display: none; width: 100%; height: 100%; object-fit: contain; }
 .cam-hint { color: var(--muted); font-size: 13px; padding: 18px; text-align: center; line-height: 1.7; }
 
+/* ---- 伪彩色深度图（与彩色画面并排显示，不做像素叠加） ---- */
+.depth-body {
+  position: relative; margin-top: 10px;
+  display: flex; align-items: center; justify-content: center;
+  aspect-ratio: 4 / 3; max-height: 34vh;
+  background: #0a0d12; border: 1px solid var(--line); border-radius: 13px; overflow: hidden;
+}
+#depthImg { display: none; width: 100%; height: 100%; object-fit: contain; }
+.depth-label {
+  position: absolute; top: 6px; left: 8px; z-index: 1; pointer-events: none;
+  font-size: 11px; color: var(--muted); background: rgba(10, 13, 18, .72);
+  padding: 2px 7px; border-radius: 6px;
+}
+
 /* ---- 前方距离（D435I 深度流，纯旁路显示） ---- */
 .dist { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; }
 .dist-item {

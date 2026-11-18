@@ -53,11 +53,15 @@ class WalkApp:
 
     # ---------------- 可选部件 ----------------
 
-    def use_camera(self) -> None:
-        """订阅官方视频服务；拿不到画面也继续，只是网页显示不可用原因。"""
-        camera = Camera()
+    def use_camera(self, direct: bool = False, with_depth: bool = False) -> None:
+        """起相机预览；DDS 拿不到画面会自动回落直连，再失败也只是网页显示原因。
+
+        `with_depth=True` 时直连 pipeline 会同时开深度流（供 --depth 分析深度）。
+        """
+        camera = Camera(direct=direct, with_depth=with_depth)
         if camera.start():
-            print(f"相机已启动：{camera.width}x{camera.height}（DDS 视频流）", flush=True)
+            desc = "D435I 直连" if camera.source == "direct" else "DDS 视频流"
+            print(f"相机已启动：{camera.width}x{camera.height}（{desc}）", flush=True)
         else:
             print(f"相机不可用：{camera.error}（网页仍可遥控，只是没有画面）", flush=True)
         self.camera = camera
@@ -66,9 +70,26 @@ class WalkApp:
         """开 D435I 深度流测距；拿不到也继续，只是网页显示不可用原因。
 
         视觉分析是纯旁路：结果只进 /api/status，绝不参与控制循环或看门狗。
+        相机直连且开了深度流时，彩色和深度来自同一条 pipeline：相机线程只把
+        最新深度帧投给 `ingest()`（微秒级），测距/着色在 depth 自己的线程里做，
+        不会拖慢彩色取帧；两条 MJPEG 也各走各的节奏（彩色 25fps、深度 5fps）。
+        厂商服务运行时深度会被饿成 ~0.5fps，要深度先 `just cam-off`
+        （= `sudo systemctl stop noetix-video-capture`）。
         """
-        print("[warn] --depth 会直连 D435I，与 noetix-video-capture 争用 UVC；"
-              "若画面停滞请去掉该参数并重启服务", flush=True)
+        synced = (self.camera is not None and self.camera.source == "direct"
+                  and self.camera.with_depth)
+        if synced:
+            vision = DepthVision(external=True)
+            if vision.start():
+                self.camera.set_depth_sink(vision.ingest)
+                print("深度视觉已启动：彩色+深度同源采集（分析在独立线程，不拖慢画面）",
+                      flush=True)
+            else:
+                print(f"深度视觉不可用：{vision.error}（遥控照常可用）", flush=True)
+            self.vision = vision
+            return
+        print("[info] --depth 直连 D435I 深度流；若画面 fps 只有 ~0.5，"
+              "先停厂商视频服务（sudo systemctl stop noetix-video-capture）", flush=True)
         vision = DepthVision()
         if vision.start():
             print("深度视觉已启动：左/中/右分区测距（仅网页显示）", flush=True)

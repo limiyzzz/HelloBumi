@@ -13,8 +13,8 @@
 | `src/walk/app.py` | 装配与生命周期：SDK → 状态 → 相机 / 深度 → HTTP → 控制循环 | HighController |
 | `src/walk/server.py` | HTTP 接口（Flask + Werkzeug）：页面 + 静态资源 + 三个接口 + 命令分发表 | —— |
 | `src/walk/remote.py` | 网页意图的共享状态：速度、行走开关、看门狗、使能防呆 | —— |
-| `src/walk/camera.py` | 订阅官方视频服务的 DDS 流，压成 JPEG | MediaController |
-| `src/walk/depth.py` | D435I 深度流 → 左/中/右分区最近距离（`--depth` 才启用的实验性旁路） | pyrealsense2 |
+| `src/walk/camera.py` | 相机预览：DDS 流 / 直连 D435I 自动选择，压成 JPEG | MediaController 或 pyrealsense2 |
+| `src/walk/depth.py` | D435I 深度流 → 分区距离 + 伪彩深度图（`--depth` 才启用） | pyrealsense2, cv2 |
 | `noetix_sdk_bumi/` | 厂商 SDK 的 3 个 `.so` + `dds.xml` 软连接（项目根，直接 import） | —— |
 | `src/web/index.html` | 遥控网页：纯结构（`web/` 必须和 `walk_web.py` 同级） | —— |
 | `src/web/app.css` | 页面样式（由 `/static/` 提供） | —— |
@@ -37,8 +37,12 @@ Python 依赖统一写在项目根的 `pixi.toml`（`pixi.lock` 建议提交）�
 | `just install` | 创建/更新环境（`pixi install`） |
 | `just doctor` | 检查 Python / numpy / cv2 / 厂商 SDK 能否导入 |
 | `just check` | Python + JS 语法检查 + vendor 文件 sha256 完整性 |
-| `just serve` | 起网页遥控（等价 `python3 -u walk_web.py --port 8080`） |
+| `just cam-off` / `cam-on` / `cam-status` | 停 / 启 / 查看厂商视频服务（直连前必须先 `cam-off`） |
+| `just serve` | 起网页遥控：默认直连 D435I 彩色流（`--port 8080`） |
 | `just serve-nocam` | 同上，不开相机预览 |
+| `just serve-depth` | 同上，彩色+深度同一条 pipeline，出距离和伪彩深度图（`--depth`） |
+| `just serve-dds` | 改回厂商 DDS 视频流（`--dds-cam`，只有彩色、没有深度图） |
+| `just restart` | 幂等重启：停旧实例、等设备释放、再直连启动（彩色+深度） |
 | `just serve-bg` / `just kill` | 后台运行（日志 `logs/walk_web.log`）/ 停止 |
 | `just wifi-status` / `wifi-scan` / `wifi-saved` | 查看 WiFi 状态 / 扫描 / 已保存配置 |
 | `just wifi-connect <SSID> [密码]` | 连接 WiFi |
@@ -47,7 +51,7 @@ Python 依赖统一写在项目根的 `pixi.toml`（`pixi.lock` 建议提交）�
 `pixi.toml` 里的内容：
 
 - `python = "3.10.*"`：厂商 SDK 只提供 `*.cpython-310-aarch64-linux-gnu.so`，**不能升 3.11+**；
-- `numpy` / `opencv-python`：`walk/camera.py` 的运行时依赖；
+- `numpy` / `opencv-python`：`walk/camera.py` 直连取帧 + JPEG 编码、`walk/depth.py` 伪彩着色的运行时依赖；
 - `flask`（含 `werkzeug`）：`walk/server.py` 的 HTTP 服务，WSGI + threaded；
 - `psutil`：`walk/server.py` 枚举本机网卡 IPv4（`net_if_addrs()`），替掉手写的 `fcntl.ioctl`；
 - `typer` / `questionary` / `tenacity` / `rich`：`wifi_setup.py` 的 CLI、交互向导、轮询、表格渲染；
@@ -97,8 +101,10 @@ MJPEG 用同步生成器逐帧推，不需要 asyncio 事件循环，也少了 p
 > 代码已从旧的 `src/bumi/` 全部收拢到 `src/walk/`；只读状态采集
 > （`core.py` / `types.py` / `tools.py`）和 SDK 查找/预检层 `sdk.py` 都已删除。
 
-> **同一时刻只能有一个控制进程**：`walk_web.py` 独占 SDK 的 HighController 通道，
-> 重复启动第二个会 `core dumped`。切换前先 `pkill -f walk_web.py`。
+> **同一时刻只能有一个控制进程**：`walk_web.py` 独占 SDK 的 HighController 通道
+> 和 D435I。程序启动时会主动检测旧实例，发现就直接报 PID 并拒绝启动（不再让你
+> 看到一堆 `Device or resource busy`）。切换用 `just restart`，它会停旧实例、等
+> 2 秒设备释放、再启动；手动切换先 `pkill -f walk_web.py` 并等 2 秒。
 
 ## 位置
 
@@ -133,6 +139,7 @@ ls          # 应看到 walk/  walk_web.py  web/
 
 ```bash
 cd /home/noetix/projects/bumi-main
+just cam-off                                # 先把 D435I 从厂商视频服务手里拿回来
 just serve                                  # 推荐：依赖由 pixi.toml 提供
 
 # 或直接（必须走 pixi 环境，系统 python3 缺 flask）
@@ -174,17 +181,52 @@ pkill -f walk_web.py      # 停止
 | `--iface` | 全部网卡 | 只显示指定网卡的访问地址，如 `wlx90de802fc5eb` |
 | `--bind` | `0.0.0.0` | 监听地址，改成 `127.0.0.1` 就只有本机能访问 |
 | `--no-camera` | 关 | 不启动相机预览（只遥控、不看画面，启动更快） |
+| `--direct-cam` | 开 | 兼容旧命令：默认已直连 D435I，无需再加 |
+| `--dds-cam` | 关 | 改回订阅厂商 `noetix-video-capture` 的 DDS 视频流（不碰设备） |
+| `--depth` | 关 | 彩色+深度同一条 pipeline：出分区距离和伪彩深度图（需先 `just cam-off`） |
 
 ### 相机画面
 
-页面最下方是 D435i 的实时画面（MJPEG，实测约 15 帧/秒），右上角显示实测帧率。
+视觉卡片里是 D435i 的实时画面（MJPEG，直连约 30 帧/秒），右上角同时显示来源
+（`直连` / `DDS`）和实测帧率；加 `--depth` 时画面下方还会多一张伪彩深度图（见「前方测距」）。
 相机是**独立可选模块**：拿不到画面时页面只显示「不可用 + 原因」，行走遥控照常可用。
 
-**画面走的是官方视频服务的 DDS 流，不是直接开相机。** 原因：RealSense 被
-`noetix-video-capture.service` 独占（它把 UVC 接口挂在 usbfs 上），任何进程再去直连
-都会报 `acquire_power failed: failed to set power state`，深度流也会被拖到 1~3 fps。
+**默认自己直连 D435I，不再经过厂商视频服务。** 直连前先停掉厂商服务：
 
-所以 `walk_web.py` 的做法是订阅它已经发布出来的视频：
+```bash
+just cam-off      # sudo systemctl stop noetix-video-capture
+just serve        # 彩色流；日志应出现「相机已启动：640x480（D435I 直连）」
+just serve-depth  # 彩色 + 深度同一条 pipeline（同一 frameset，天然同帧）
+```
+
+- **直连（默认）**：`pyrealsense2` 打开 `color bgr8 640x480@30`；`--depth` 时同一条
+  pipeline 再加 `depth z16 640x480@15`，两路来自同一个 frameset，天然同帧；
+- **DDS（`--dds-cam`，或直连失败时自动回落）**：订阅厂商服务的
+  `subscribe_internal_video_desensed`（640x480 YUYV422，约 25fps），不碰设备、不用 sudo，
+  但只有彩色、没有深度图。
+
+两条路互斥：`noetix-video-capture` 运行时通过 usbfs 独占设备，直连会报
+`acquire_power failed: failed to set power state`，还会把深度流饿到 ~0.5fps。
+所以正常流程是先 `just cam-off`；忘了停时直连失败会自动回落 DDS，保证网页还有画面。
+`--direct-cam` 仍可识别，但已经是默认值。
+
+**画面同步**（`--depth` 时生效）：直连模式下彩色与深度并进同一条 pipeline，
+同一个 frameset 同时出两路数据，彩色槽位与伪彩深度图在同一时刻原子更新，
+两个画面天然同帧（彩色显示帧率因此从 30fps 降到 15fps，与深度对齐）；
+DDS 模式下两路各自采集，相机模块维护一个 48 帧的时间戳环形缓存，
+深度线程每出一帧就从缓存里挑同刻彩色帧配对发布——两个画面也显示同一时刻。
+
+直连路径：
+
+```text
+just cam-off（停 noetix-video-capture，交出 D435I）
+        ▼
+walk_web.py → pyrealsense2 pipeline：color bgr8 + depth z16（--depth）
+        ├→ 彩色帧 → JPEG → MJPEG → 浏览器 <img>
+        └→ 深度帧 → 分区距离 + 伪彩 JPEG（与彩色同一 frameset，配对推送）
+```
+
+DDS 回退路径：
 
 ```text
 noetix-video-capture.service（占着相机，采集 RealSense）
@@ -193,25 +235,27 @@ noetix-video-capture.service（占着相机，采集 RealSense）
 walk_web.py  → YUYV 转 BGR → JPEG → MJPEG → 浏览器 <img>
 ```
 
-好处是两个进程共存：不用停官方服务、不用 sudo、不用改任何配置。
-
-`walk_web.py` 启动时会打印：
+启动时会打印实际走的哪条：
 
 ```text
+相机已启动：640x480（D435I 直连）
+深度视觉已启动：彩色+深度同帧采集（直连同源，画面自动同步）
+# 或（忘了停厂商服务，直连失败）
+[warn] 直连 D435I 失败：...；改为订阅厂商 DDS 视频流（官方服务没停就 just cam-off 再重启）
 相机已启动：640x480（DDS 视频流）
 # 或
-相机不可用：DDS 视频 8 秒内没有收到画面（noetix-video-capture 服务在跑吗？）（网页仍可遥控，只是没有画面）
+相机不可用：...（网页仍可遥控，只是没有画面）
 ```
 
 几个实现要点：
 
-- SDK 回调跑在 DDS 线程里，只把最新帧挂到槽位，`bytes()` + 解码 + JPEG 编码都在工作线程做；
+- 直连时 `wait_for_frames` 跑在相机线程里，彩色编码与深度分析都不进控制循环；
 - 来不及处理就**丢帧**，只会降低预览帧率，不会阻塞控制循环；
-- 预览大约占 1 个 CPU 核（DDS 每帧要把 614400 个像素转成 Python list，这部分开销在 SDK 里）；
-  不需要画面时用 `--no-camera` 可以省掉。
+- 深度配对生效后彩色流按深度节奏推（15fps），两个画面严格同帧；
+- 不需要画面时用 `--no-camera` 可以省掉。
 
-> 如果哪天把 `noetix-video-capture.service` 停掉了，`walk_web.py` 就取不到画面（会显示不可用），
-> 重新 `sudo systemctl start noetix-video-capture` 即可。
+> 想恢复厂商服务：`just cam-on`（`sudo systemctl start noetix-video-capture`）。
+> 它一恢复就会抢回设备，walk_web.py 下次启动直连失败、自动回落到 DDS。
 
 ### 界面操作（半吊起、脚着地的场景）
 
@@ -263,38 +307,73 @@ O 进入/退出行走    C 收纳    Q 退出服务
 - HTTP 服务在后台线程启动，主线程最多等 2 秒：启动卡住也**不会挡住控制循环**（看门狗只有在循环里才生效）。
   超时后服务若最终失败，后台会补一条 `[warn]` 日志，不静默吞异常；退出时 `close()` 先补零速度，
   再等启动线程收尾（最多 1 秒）后关服务。
-- 视觉测距是**纯旁路，且默认不启用**（`--depth` 才开）：`depth.py` 有自己的线程和最新帧快照，
+- 视觉测距是**纯旁路，且默认不启用**（`just serve-depth` / `--depth` 才开）：`depth.py` 有自己的线程和最新帧快照，
   结果只并入 `/api/status` 给网页显示；不进 10ms 控制循环、不进看门狗、不参与任何运动决策。
-  它会直连 D435I，与厂商视频服务争用 USB，因此默认关闭以优先保证相机画面和遥控。
-  开启后若深度流卡住或结果超过 2 秒没更新，网页会清空距离并提示原因；连续取帧失败会
-  主动释放设备，不持续抢占。
+  **必须先停厂商视频服务**（`just cam-off`，见「前方测距」），否则深度会被饿成 ~0.5fps。
+  开启后若深度流卡住或结果超过 2 秒没更新，网页会清空距离并提示原因；连续取帧失败会主动
+  释放设备，不持续占用 USB。
 - `START` 只在 `workmode=30` 时允许下发，其余状态会被服务端拒绝，防止误失能摔倒。
 - 真实的 HTTP 路由：`GET /`（页面）、`GET /static/<css|js>` 与 `/static/vendor/<js>`（本地静态资源）、
-  `GET /api/status`（状态 + 相机 + 前方距离）、`GET /api/camera.mjpg`（画面流）、`POST /api/cmd`（命令），
+  `GET /api/status`（状态 + 相机 + 前方距离）、`GET /api/camera.mjpg`（画面流）、
+  `GET /api/depth.mjpg`（伪彩深度图流，仅 `--depth` 时可用）、`POST /api/cmd`（命令），
   没有鉴权，**只在可信局域网里用**；需要更严格时用 `--bind 127.0.0.1` 配合 SSH 端口转发。
 
-## 前方测距（`src/walk/depth.py`，实验性）
+## 前方测距（`src/walk/depth.py`）
 
-**默认关闭。** 厂商 `noetix-video-capture.service` 通过 usbfs 独占 D435I 的 UVC 接口
-（见上文「相机画面」），`pyrealsense2` 再直连同一设备会争用控制端点。实测后果是相机
-每秒重枚举一次（内核 `Failed to query (GET_CUR) ... -32`），彩色 DDS 流停在最后一帧、
-深度流随后中断；`systemctl is-active` 仍是 `active`，但流已经没了。所以**日常遥控不要开**，
-要用必须显式加 `--depth`，且要接受网页画面不可用：先 `sudo systemctl stop noetix-video-capture`，
-测完再 `start` 回来。旧的 `--no-depth` 仍可识别（现在是默认值，无需再加）。
+**默认关闭，打开方式是 `just serve-depth`（等价于在启动命令上加 `--depth`）。**
 
-开启后网页视觉卡片下方显示 **左 / 中 / 右** 三个方向最近的障碍物距离，< 0.8 m 标红；
-**只供人参考，不参与任何运动决策**。
+深度数据只能来自 D435I 自己的 `depth z16` 流：DDS 的 `VideoStream` 只有彩色图
+（实测 `video_data` 恰好 614400 字节 = 640×480 YUYV422 一帧），SDK 也没有深度 / 点云话题或接口。
 
-- 数据来源：DDS 的 `VideoStream` 只有彩色图，SDK 没有深度接口；深度来自单独开的
-  `depth z16` 流（640×480@15），按设备 `depth_scale` 换算成米。
+**必须先停 `noetix-video-capture.service`。** 2026-11-15 实测推翻了 11-13 的「可共存」结论：
+厂商服务运行时，内核会以约 55 次/分钟的频率重新探测 UVC 接口（`journalctl -k` 每秒刷
+`Found UVC 1.50 device`，断电重启也不清除），同时它以 usbfs 方式独占设备 —— 此时
+`pyrealsense2` 的深度流被饿成 ~0.5fps，网页显示「深度数据已过期」，这是**固定行为，
+不是设备偶发病态**。停掉厂商服务后直连实测：深度 15fps、有效像素 82–90%、中位距离
+1.44 m；彩色走直连 30fps，两条流都稳定。
+
+停服务不影响画面：camera 模块发现 DDS 拿不到画面会自动回落直连彩色流，
+且彩色与深度并进同一条 pipeline 同帧采集（网页两个画面自动同步，
+彩色帧率与深度对齐为 15fps）。标准用法就是：
+
+```bash
+sudo systemctl stop noetix-video-capture    # 用深度前先停厂商服务
+just serve-depth
+sudo systemctl start noetix-video-capture   # 不用深度了再恢复
+```
+
+旧的 `--no-depth` 仍可识别（现在是默认值，无需再加）。
+
+开启后视觉卡片里依次是彩色画面、伪彩深度图、以及 **左 / 中 / 右** 三个方向最近的障碍物距离
+（< 0.8 m 标红）；**只供人参考，不参与任何运动决策**。
+
+- 数据来源：`depth z16` 流（640×480@15），按设备 `depth_scale`（实测 0.001）换算成米。
 - 量程 0.35–8 m。裁掉画面上 20% 与下 22%（天花板 / 地面），每区切成 6×8 小块、取块内深度
   中值，再取最小块 —— 避免单个噪点、无效像素或地面把「最近距离」带偏。
-- `pyrealsense2` 是可选依赖（本机 2.58.4.10922，aarch64 上来自用户级 site-packages），
+- `pyrealsense2` 是可选依赖（本机 2.58.4，aarch64 上来自用户级 site-packages），
   **没有**写进 `pixi.toml`。缺失或设备打不开时只打印原因，遥控照常可用；`just doctor` 会提示。
-- 结果超过 2 秒没更新（`VISION_STALE`）就判过期，网页清空距离并显示原因。取帧连续异常会退避，
-  累计 `MAX_MISSES` 次后主动 `pipeline.stop()` 把 USB 让回厂商服务，不持续抢占设备。
+- 结果超过 2 秒没更新（`VISION_STALE`）就判过期，网页清空距离并显示原因。取帧超时阈值
+  1000ms、连续 `REPORT_MISSES` 次才提示中断（启动预热期不再误报），累计 `MAX_MISSES`
+  次后主动 `pipeline.stop()` 释放设备。
 - 画面停滞也有检测：超过 `CAMERA_STALE` 秒没有新帧，`/api/status.camera.stale` 置真，
   页面明确提示「画面已停滞」，不会静默停留在最后一帧。
+
+### 伪彩深度图（`/api/depth.mjpg`）
+
+同一路深度帧顺带编码成 JPEG，视觉卡片里彩色画面下方就是深度图（MJPEG，5 帧/秒，
+与 `depth.py` 的分析频率一致；彩色画面仍走 DDS，两者互不影响）。
+
+- **固定量程着色**：`0.35–8 m` 线性映射到 `COLORMAP_JET`，近处偏红、远处偏蓝，
+  与「< 0.8 m 标红」的警示同一套语义。不按每帧 min/max 归一化，颜色在帧与帧之间才可比
+  （否则稍微动一下颜色就全变，等于没有参考价值）。
+- **无效像素画深灰** `(40, 40, 40)`：白墙、暗处靠 D435I 红外投射器一般仍有深度，
+  所以深灰就是真的没数据（超出量程、反光、遮挡），不是「很远」。
+- JPEG 质量 80（`DEPTH_JPEG_QUALITY`），640×480 单帧约 20–30 KB，比彩色流省带宽；
+  取帧后只解码一次，测距和出图共用同一个米制数组，不多占一份 CPU。
+- 中断处理：深度结果一变成 `ok=False`，后端就把缓存的 JPEG 置空（不会让网页停在旧图上）；
+  深度图 `<img>` 的 `error` 事件触发「深度图中断，正在重试 ...」，由下一轮 `/api/status`
+  轮询自动重连，不做立即重试，避免断流时反复建连接。
+- 未启用时 `/api/depth.mjpg` 直接返回 `503` + 原因，网页显示「深度图未启用（just serve-depth 开启）」。
 
 ## WiFi 配网（`src/wifi_setup.py`）
 
@@ -363,28 +442,27 @@ pixi run python src/wifi_setup.py forget CMCC
 
 ## 视觉
 
-**日常就用网页里的画面**（见上文「相机画面」），走的是官方视频服务的 DDS 流，和遥控互不干扰。
+**日常就用网页里的画面**（见上文「相机画面」）：默认自己直连 D435I，不再依赖厂商视频服务；
+忘了停服务时直连失败会自动回落到 DDS，两种情况网页都有画面，和遥控互不干扰。
 
-### 谁在占着相机（服务没跑就会没有画面）
+### 谁在占着相机（直连前必须搞清楚）
 
 ```bash
-systemctl status noetix-video-capture
+just cam-status
+# 或 systemctl status noetix-video-capture --no-pager
 # ExecStart=/home/noetix/work/noetix_video_capture/demo video_external_capture 640 480 30
 ```
 
 它是厂商随机器人安装的服务（`enabled` + `Restart=always`），独占 RealSense 并通过 DDS 发布视频。
-只要它在跑，任何进程再去直连相机都会失败：
+只要它在跑：
 
-```text
-acquire_power failed: failed to set power state
-Couldn't resolve requests
-```
+- 任何进程再开 pyrealsense2 都会失败：`acquire_power failed: failed to set power state`；
+- 它同时会让直连深度流饿成 ~0.5fps，并伴随每秒一次的 UVC 重探测
+  （`journalctl -k` 每秒刷 `Found UVC 1.50 device`，断电重启也不清除）。
 
-**所以不要尝试绕过它**，用 `subscribe_internal_video_desensed` 订阅就行
-（`walk_web.py` 已经这么做了，格式是 640x480 YUYV422、约 25fps）。
-
-画面拿不到时优先查这个服务的状态（`systemctl status noetix-video-capture`），
-不要尝试停掉它去直连相机——那样 `walk_web.py` 反而更取不到画面。
+所以：**要自己收彩色+深度 → 先 `just cam-off`**，之后 `just serve` / `just serve-depth`
+全部由本项目自己的 pipeline 采；不用了再 `just cam-on` 交还给厂商服务。
+不停服务直接启动时，直连会失败并自动回落到 DDS（只有彩色，没有深度图）。
 
 ## 排障
 
@@ -394,15 +472,22 @@ Couldn't resolve requests
 | `ModuleNotFoundError: highcontrol_py` | 项目根 `noetix_sdk_bumi/` 里的软连接断了，检查链接目标 `/home/noetix/noetix_sdk_bumi/build/` |
 | `启动失败：HighController 初始化失败` | 上一个 `walk_web.py` 还占着通道，先 `pkill -f walk_web.py` |
 | `core dumped` | 同上，两个控制进程同时加载了 SDK |
+| `启动失败：已有 walk_web.py 在运行（PID ...）` | 旧实例还占着 SDK / D435I（常见于 Ctrl+C 后以为退出了、或之前用 `nohup` 起的后台服务）。用 `just restart` 一步到位；手动就 `pkill -f walk_web.py` 后等 2 秒 |
+| `xioctl(VIDIOC_S_FMT) failed ... Device or resource busy` | 设备被别的进程占：先 `pgrep -af walk_web.py`；没有则看厂商服务是否又在跑（`just cam-status`，要直连就 `just cam-off`） |
 | `启动失败：... Software caused connection abort` / 端口占用 | 换个端口 `--port 8081` |
 | `[warn] HTTP 服务 2s 内没启动完` | 控制循环已照常运行，网页可能稍后才起来；若后面还有 `[warn] ... 最终启动失败`，用 `ss -ltnp` 查端口并换 `--port` |
 | 打开网页是「未连接」 | 服务没起、IP 不对、或不在同一网段；看启动时打印的地址 |
 | 网页能开但机器人不动 | 没进 `workmode 2`（先「起身」再「使能」再「行走」）；或速度滑块太小 |
 | `启动失败：找不到网页文件` | `src/web/index.html` 没和 `src/` 里的代码一起拷过去 |
 | `workmode` 一直是 `-` | DDS 没连上运控板，检查 `noetix_sdk_bumi/dds.xml` 软连接与里面的 Peer 地址、网线 |
-| 网页相机显示「不可用」 | 先看画面里的原因：多半是 `noetix-video-capture` 没在跑，`systemctl status noetix-video-capture` |
-| 画面卡住只有一帧 / 提示「画面已停滞」 | 厂商 DDS 视频流没有新帧。看 `journalctl -k` 是否每秒刷 `Found UVC 1.50 device` / `GET_CUR ... -32`；若开了 `--depth` 立即去掉并重启服务，必要时重启 `noetix-video-capture` 或重新插拔 D435I |
-| 网页距离一直 `--` / 提示「前方测距未启用」 | 默认就是关闭的，这是正常状态；只有显式加 `--depth` 才会尝试直连深度流（会牺牲网页画面，见上文「前方测距」） |
+| 画面卡住只有一帧 / 提示「画面已停滞」 | 直连模式下检查 USB：`journalctl -k` 是否每秒刷 `Found UVC 1.50 device` / `GET_CUR ... -32`，是则重新插拔 D435I 或断电重启；DDS 模式下多半是 `noetix-video-capture` 没出流，`systemctl status noetix-video-capture` |
+| 网页距离一直 `--` / 提示「前方测距未启用」 | 未启用是默认状态；`just serve-depth` 开启。**前提是先停厂商视频服务**，否则深度被饿成 ~0.5fps、网页提示「深度数据已过期」 |
+| 深度流只有 ~0.5fps / 「深度数据已过期」 | `noetix-video-capture` 还在跑：它每秒重枚举 UVC 并独占设备。`sudo systemctl stop noetix-video-capture` 后重启 `walk_web.py`，画面自动回落直连，深度恢复 15fps |
+| 网页相机显示「不可用」 | 看画面里的原因：厂商服务没跑且直连也失败（设备被占 / 没插好 / 缺 pyrealsense2）；遥控照常可用 |
+| 启动时短暂提示「深度帧中断」 | 深度流预热期偶发，几秒内会自愈；超时阈值已调到 1000ms、连续 5 次才提示。若持续不恢复，按「画面停滞」条目检查 USB |
+| 深度图一片深灰 | 该方向确实没有有效深度：超出 0.35–8 m、镜面 / 反光、或物体太近；先把机器人转向有纹理的目标再试 |
+| 深度图颜色整体偏蓝或偏红 | 正常：固定 0.35–8 m 量程，近距离大面积偏红、远处偏蓝；不做逐帧归一化是本意（颜色才可比） |
+| 深度图中断，正在重试 ... | 深度流掉帧超过阈值：后端已清空旧图，前端每 2 秒最多重连一次 `/api/depth.mjpg`（避免反复建连接），恢复后自动继续；持续不恢复看是否已「释放设备」 |
 | `scan` 只看到当前连着的那个 WiFi | 主动扫描没权限（只拿到缓存）：输 sudo 口令，或加上面那条 polkit 规则 |
 | 连上后显示「已连接：None IP：-」 | 多半是激活完又在重新协商 / 等 DHCP：脚本现在会等拿到 IP 再打印；仍为空就再跑 `status`，或检查密码 |
 | `Secrets were required, but not provided` | 那条已保存配置没把密码存在系统里（只在用户钥匙串中），root 下取不到：重新输一次密码连（脚本会自动转过去），之后就能直接重连 |

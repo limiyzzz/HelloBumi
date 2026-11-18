@@ -23,13 +23,40 @@ check:
     pixi run python -c "import json,hashlib,pathlib; p=pathlib.Path('src/web/vendor'); m=json.load(open(p/'vendor.json')); assert all(hashlib.sha256((p/x['file']).read_bytes()).hexdigest()==x['sha256'] for x in m['libraries']); print('vendor 校验 OK')"
     @echo "Python + JS 语法 + vendor 完整性检查通过"
 
-# ---------------- 网页遥控 ----------------
+# ---------------- 相机 ----------------
+
+# 停厂商视频服务，把 D435I 让给 walk_web.py（直连彩色+深度前必须先执行）
+cam-off:
+    sudo systemctl stop noetix-video-capture
+    @systemctl is-active noetix-video-capture || true
+
+# 恢复厂商视频服务（不用本项目直连时再开回来）
+cam-on:
+    sudo systemctl start noetix-video-capture
+    @systemctl is-active noetix-video-capture || true
+
+cam-status:
+    @systemctl status noetix-video-capture --no-pager -n 5 || true
+
+# ---------------- 网页遥控（默认直连 D435I，需先 just cam-off） ----------------
 
 serve port=PORT:
     pixi run python -u src/walk_web.py --port {{port}}
 
 serve-nocam port=PORT:
     pixi run python -u src/walk_web.py --port {{port}} --no-camera
+
+# 彩色 + 深度同一条 pipeline（同一 frameset，画面天然同帧）；需先 just cam-off
+serve-depth port=PORT:
+    pixi run python -u src/walk_web.py --port {{port}} --depth
+
+# 兼容旧命令：--direct-cam 现在已是默认，等价于 just serve
+serve-direct port=PORT:
+    pixi run python -u src/walk_web.py --port {{port}} --direct-cam
+
+# 改回厂商 DDS 视频流（不碰设备，画面只有彩色、没有深度图）
+serve-dds port=PORT:
+    pixi run python -u src/walk_web.py --port {{port}} --dds-cam
 
 serve-bg port=PORT:
     #!/usr/bin/env bash
@@ -41,6 +68,14 @@ serve-bg port=PORT:
 kill:
     -pkill -f '[w]alk_web.py'
     @echo "已停止（没找到进程时会忽略报错）"
+
+# 幂等重启：停旧实例 → 等设备释放 → 直连彩色+深度启动（避免残留实例抢 D435I）
+restart port=PORT:
+    #!/usr/bin/env bash
+    set -e
+    pkill -f '[w]alk_web.py' || true
+    sleep 3
+    exec pixi run python -u src/walk_web.py --port {{port}} --depth
 
 logs:
     tail -n 60 -f logs/walk_web.log
